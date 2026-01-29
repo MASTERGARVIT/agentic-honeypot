@@ -21,7 +21,7 @@ conversation_state = {
 # MODELS
 # =========================
 class ScamRequest(BaseModel):
-    message: str
+    message: str | None = None
 
 # =========================
 # AUTH HANDLER (PATCHED)
@@ -63,7 +63,9 @@ def scam_agent(
     conversation_state["turns"] += 1
     duration = int(time.time() - conversation_state["start_time"])
 
-    message = request.message.lower()
+    incoming_message = request.message or "hello"
+    message = incoming_message.lower()
+
 
     # Simple scam detection rules
     scam_keywords = ["bank", "blocked", "urgent", "click", "verify", "account"]
