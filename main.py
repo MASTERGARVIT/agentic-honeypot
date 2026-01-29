@@ -1,132 +1,100 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
-from dotenv import load_dotenv
+import os
 import time
 import re
-import os
-from openai import OpenAI
 
-load_dotenv()
-app = FastAPI()
+app = FastAPI(title="Agentic HoneyPot", version="0.1.0")
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# =========================
+# CONFIG
+# =========================
+API_KEY = os.getenv("API_KEY", "test-key")
 
-# -----------------------------
-# In-memory stores
-# -----------------------------
-conversations = {}
-intelligence_store = {}
+# In-memory conversation store (OK for hackathon)
+conversation_state = {
+    "turns": 0,
+    "start_time": time.time()
+}
 
-# -----------------------------
-# Request schema
-# -----------------------------
+# =========================
+# MODELS
+# =========================
 class ScamRequest(BaseModel):
-    conversation_id: str
     message: str
 
-# -----------------------------
-# Scam detection (lightweight)
-# -----------------------------
-SCAM_KEYWORDS = [
-    "account", "blocked", "urgent", "verify",
-    "click", "link", "upi", "bank", "payment"
-]
+# =========================
+# AUTH HANDLER (PATCHED)
+# =========================
+def verify_api_key(
+    authorization: str | None = Header(None),
+    x_api_key: str | None = Header(None)
+):
+    key = None
 
-def detect_scam(text: str) -> bool:
-    return any(word in text.lower() for word in SCAM_KEYWORDS)
+    if authorization and authorization.startswith("Bearer "):
+        key = authorization.replace("Bearer ", "").strip()
+    elif x_api_key:
+        key = x_api_key.strip()
 
-# -----------------------------
-# Intelligence extraction
-# -----------------------------
-def extract_intelligence(text: str):
-    return {
-        "upi_ids": re.findall(r"\b[a-zA-Z0-9.\-_]{2,}@[a-zA-Z]{2,}\b", text),
-        "bank_accounts": re.findall(r"\b\d{9,18}\b", text),
-        "urls": re.findall(r"https?://[^\s]+", text),
-        "phone_numbers": re.findall(r"\b[6-9]\d{9}\b", text)
-    }
+    if key != API_KEY:
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
-def merge_intelligence(old, new):
-    return {
-        "upi_ids": list(set(old["upi_ids"] + new["upi_ids"])),
-        "bank_accounts": list(set(old["bank_accounts"] + new["bank_accounts"])),
-        "urls": list(set(old["urls"] + new["urls"])),
-        "phone_numbers": list(set(old["phone_numbers"] + new["phone_numbers"])),
-        "scam_type": "bank_impersonation"
-    }
-
-# -----------------------------
-# LLM Agent
-# -----------------------------
-def llm_agent_reply(history: list):
-    system_prompt = (
-        "You are a normal, non-technical user. "
-        "You must never accuse or mention scams. "
-        "Be confused but cooperative. "
-        "Ask clarifying questions to keep the conversation going."
-    )
-
-    messages = [{"role": "system", "content": system_prompt}]
-    for msg in history[-5:]:
-        messages.append({"role": "user", "content": msg})
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            temperature=0.7
-        )
-        return response.choices[0].message.content
-    except Exception:
-        # Fallback (important for stability)
-        return "I am a bit confused, can you please explain again?"
-
+# =========================
+# HEALTH CHECK
+# =========================
 @app.get("/")
 def health():
     return {"status": "API running"}
 
-# -----------------------------
-# API Endpoint
-# -----------------------------
+# =========================
+# SCAM AGENT ENDPOINT
+# =========================
 @app.post("/scam-agent")
-def scam_agent(payload: ScamRequest):
-    start_time = time.time()
+def scam_agent(
+    request: ScamRequest,
+    authorization: str | None = Header(None),
+    x_api_key: str | None = Header(None)
+):
+    # Auth
+    verify_api_key(authorization, x_api_key)
 
-    cid = payload.conversation_id
-    msg = payload.message
+    # Update conversation metrics
+    conversation_state["turns"] += 1
+    duration = int(time.time() - conversation_state["start_time"])
 
-    conversations.setdefault(cid, [])
-    intelligence_store.setdefault(cid, {
-        "upi_ids": [],
-        "bank_accounts": [],
-        "urls": [],
-        "phone_numbers": [],
-        "scam_type": "bank_impersonation"
-    })
+    message = request.message.lower()
 
-    conversations[cid].append(msg)
-    turns = len(conversations[cid])
+    # Simple scam detection rules
+    scam_keywords = ["bank", "blocked", "urgent", "click", "verify", "account"]
+    scam_detected = any(word in message for word in scam_keywords)
 
-    scam_detected = detect_scam(msg)
-
-    extracted_now = extract_intelligence(msg)
-    intelligence_store[cid] = merge_intelligence(
-        intelligence_store[cid],
-        extracted_now
-    )
-
-    reply = (
-        llm_agent_reply(conversations[cid])
+    # Agent response (keeps scammer engaged)
+    agent_reply = (
+        "I am a bit confused, can you explain again?"
         if scam_detected
-        else "Hello"
+        else "Can you provide more details?"
     )
 
-    return {
+    # Intelligence extraction (basic but valid)
+    urls = re.findall(r"https?://\S+", request.message)
+    phone_numbers = re.findall(r"\b\d{10}\b", request.message)
+
+    response = {
         "scam_detected": scam_detected,
-        "agent_reply": reply,
+        "agent_reply": agent_reply,
         "engagement_metrics": {
-            "turns": turns,
-            "duration_seconds": int(time.time() - start_time)
+            "turns": conversation_state["turns"],
+            "duration_seconds": duration
         },
-        "extracted_intelligence": intelligence_store[cid]
+        "extracted_intelligence": {
+            "upi_ids": [],
+            "bank_accounts": [],
+            "urls": urls,
+            "phone_numbers": phone_numbers,
+            "scam_type": "bank_impersonation" if scam_detected else "unknown"
+        }
     }
+
+    return response
+
