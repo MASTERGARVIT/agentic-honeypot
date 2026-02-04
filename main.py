@@ -1,77 +1,82 @@
 from fastapi import FastAPI, Header, HTTPException
+from pydantic import BaseModel
+from typing import List, Optional
 import os
-import time
-import re
 
-app = FastAPI(title="Agentic HoneyPot", version="0.1.0")
+app = FastAPI()
 
-# =========================
-# CONFIG
-# =========================
 API_KEY = os.getenv("API_KEY", "test-key")
 
-conversation_state = {
-    "turns": 0,
-    "start_time": time.time()
-}
 
-# =========================
-# AUTH
-# =========================
-def verify_api_key(
-    authorization: str | None = Header(None),
-    x_api_key: str | None = Header(None)
-):
-    key = None
-    if authorization and authorization.startswith("Bearer "):
-        key = authorization.replace("Bearer ", "").strip()
-    elif x_api_key:
-        key = x_api_key.strip()
+# ----------- Request Models (match evaluator) -----------
 
-    if key != API_KEY:
+class Message(BaseModel):
+    sender: str
+    text: str
+    timestamp: int
+
+
+class Metadata(BaseModel):
+    channel: str
+    language: str
+    locale: str
+
+
+class ScamRequest(BaseModel):
+    sessionId: str
+    message: Message
+    conversationHistory: List[dict]
+    metadata: Metadata
+
+
+# ----------- Auth -----------
+
+def verify_key(x_api_key: str):
+    if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-# =========================
-# HEALTH
-# =========================
+
+# ----------- Health -----------
+
 @app.get("/")
 def health():
     return {"status": "API running"}
 
-# =========================
-# SCAM AGENT (NO BODY REQUIRED)
-# =========================
+
+# ----------- Scam Agent Endpoint -----------
+
 @app.post("/scam-agent")
 def scam_agent(
-    authorization: str | None = Header(None),
-    x_api_key: str | None = Header(None),
+    payload: ScamRequest,
+    x_api_key: str = Header(...)
 ):
-    verify_api_key(authorization, x_api_key)
+    verify_key(x_api_key)
 
-    # Update metrics
-    conversation_state["turns"] += 1
-    duration = int(time.time() - conversation_state["start_time"])
+    text = payload.message.text.lower()
 
-    # Default message (tester-safe)
-    message = "hello"
+    scam_keywords = [
+        "blocked",
+        "verify",
+        "otp",
+        "urgent",
+        "account",
+        "compromised",
+        "click",
+        "suspended"
+    ]
 
-    scam_detected = False
-    agent_reply = "Hello, how can I help you?"
+    is_scam = any(word in text for word in scam_keywords)
 
+    if is_scam:
+        reply = "Why is my account being suspended?"
+    else:
+        reply = "Can you explain more clearly?"
+
+    # ✅ EXACT format evaluator expects
     return {
-        "scam_detected": scam_detected,
-        "agent_reply": agent_reply,
-        "engagement_metrics": {
-            "turns": conversation_state["turns"],
-            "duration_seconds": duration
-        },
-        "extracted_intelligence": {
-            "upi_ids": [],
-            "bank_accounts": [],
-            "urls": [],
-            "phone_numbers": [],
-            "scam_type": "unknown"
-        }
+        "status": "success",
+        "reply": reply
     }
+
 
 
